@@ -1,0 +1,276 @@
+
+import os
+import tkinter as tk
+import random
+import threading
+from queue import Queue
+import sounddevice as sd
+from bark import SAMPLE_RATE, generate_audio, preload_models
+from scipy.io.wavfile import write as write_wav
+from collections import Counter
+import math
+import re
+import time
+from tkinter import ttk
+
+
+# Force CPU usage for Bark
+os.environ["DEVICE"] = "cpu"
+
+# Preload Bark models
+preload_models()
+
+# Initialize global variables
+tts_enabled = True
+banter_queue = Queue()
+audio_queue = Queue()
+generation_lock = threading.Lock()  # Ensure only one audio generation at a time
+
+# Example text corpus (replace with your corpus)
+
+
+# Preprocess corpus for sentence-based n-gram model
+ngram = {}
+corpus = corpus.lower().replace('"','').replace("'",'').replace('\n','').replace(')',' par').replace('(','lpar').replace('[','lbar').replace(']','bar').replace('’','').replace("“",'').replace("”",'')
+
+# Build the n-gram dictionary (bigram model)
+for sentence in corpus.split('.'):
+    words = sentence.split(' ')
+    for i in range(1, len(words)):
+        word_pair = (words[i - 2], words[i - 1]) if i >= 2 else None
+        if word_pair and '' not in word_pair:
+            if word_pair not in ngram:
+                ngram[word_pair] = []
+            ngram[word_pair].append(words[i])
+
+# Shannon entropy calculation
+def calculate_entropy(distribution):
+    total_count = sum(distribution.values())
+    entropy = -sum((count / total_count) * math.log2(count / total_count) for count in distribution.values() if count > 0)
+    return entropy
+
+# Calculate entropy for the bigram model and corpus
+def corpus_entropy():
+    bigram_distribution = Counter(ngram.keys())
+    output_distribution = Counter(word for pairs in ngram.values() for word in pairs)
+    return {
+        "Bigram Entropy": calculate_entropy(bigram_distribution),
+        "Corpus Entropy": calculate_entropy(Counter(words)),
+        "Output Entropy": calculate_entropy(output_distribution),
+    }
+
+# Static corpus entropy calculations
+static_entropy_values = None  # Cache for static entropy values
+generated_outputs = []  # To store generated output for dynamic entropy calculation
+
+# Update entropy calculations dynamically
+def update_dynamic_entropy(new_banter):
+    global static_entropy_values, generated_outputs
+    generated_outputs.append(new_banter)  # Add new banter to output history
+
+    # Combine corpus and generated outputs for dynamic bigram entropy
+    combined_text = corpus + " " + " ".join(generated_outputs)
+    combined_words = combined_text.split()
+    combined_bigram_distribution = Counter(
+        (combined_words[i], combined_words[i + 1]) for i in range(len(combined_words) - 1)
+    )
+    dynamic_bigram_entropy = calculate_entropy(combined_bigram_distribution)
+
+    # Dynamic output entropy (based on the generated outputs only)
+    dynamic_word_count = Counter(" ".join(generated_outputs).split())
+    dynamic_output_entropy = calculate_entropy(dynamic_word_count)
+
+    # Static entropy is calculated only once
+    if static_entropy_values is None:
+        static_entropy_values = corpus_entropy()
+
+    # Display entropies
+    display_entropy(static_entropy_values, dynamic_output_entropy, dynamic_bigram_entropy)
+
+def display_entropy(static_values, dynamic_output_entropy, dynamic_bigram_entropy=None):
+    entropy_text = "\n".join([
+        f"Bigram Entropy (Static): {static_values['Bigram Entropy']:.4f}",
+        f"Corpus Entropy (Static): {static_values['Corpus Entropy']:.4f}",
+        f"Bigram Entropy (Dynamic): {dynamic_bigram_entropy:.4f}" if dynamic_bigram_entropy else "",
+        f"Output Entropy (Dynamic): {dynamic_output_entropy:.4f}"
+    ])
+    # Remove or comment out this line:
+    # print(f"Entropy Calculations:\n{entropy_text}")  
+    entropy_label.config(text=f"Entropy:\n{entropy_text}")  # Update GUI
+
+
+
+# Generate banter based on starting bigram
+def generate_banter(starting_pair=None, greedy=False):
+    if not ngram:
+        return "Error: n-gram model is empty."
+    word_pair = starting_pair if starting_pair in ngram else random.choice(list(ngram.keys()))
+    output = f"{word_pair[0]} {word_pair[1]} "
+    while word_pair in ngram and len(output.split()) < 100:  # Limit output size
+        if not ngram[word_pair]:  # Check if the list of next words is empty
+            break
+        if greedy:
+            next_word = max(set(ngram[word_pair]), key=ngram[word_pair].count)
+        else:
+            next_word = random.choice(ngram[word_pair])
+        output += next_word + " "
+        word_pair = (word_pair[1], next_word)
+    return output.strip()
+
+def generate_and_save_audio(prompt):
+    with generation_lock:
+        try:
+            # Reset progress bar and label
+            progress_var.set(0)
+            progress_label.config(text=f"Generating Audio: {prompt[:50]}...")  # Show truncated prompt
+            root.update()  # Refresh GUI
+
+            print(f"Generating audio for: {prompt}")
+            audio_array = generate_audio(prompt)
+
+            # Simulate progress updates
+            for i in range(1, 101):
+                time.sleep(0.05)  # Simulate incremental progress
+                progress_var.set(i)
+                progress_label.config(text=f"Progress: {i}% Complete")
+                root.update()
+
+            # Save the audio file
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filepath = f"audio_outputs/audio_output_{timestamp}.wav"
+            os.makedirs("audio_outputs", exist_ok=True)
+            write_wav(filepath, SAMPLE_RATE, audio_array)
+            print(f"Saved audio to {filepath}")
+
+            # Save the prompt as a .txt file
+            text_filepath = filepath.replace(".wav", ".txt")
+            with open(text_filepath, "w", encoding="utf-8") as f:
+                f.write(prompt)
+            print(f"Saved prompt to {text_filepath}")
+
+            # Update label with confirmation
+            progress_label.config(text=f"Saved audio: {filepath}\nSaved prompt: {text_filepath}")
+            text_widget.config(text=f"Banter: {prompt}")
+        except Exception as e:
+            progress_label.config(text=f"Error generating audio: {e}")
+            print(f"Error generating audio: {e}")
+
+
+
+# Check for hex color in the banter and update background
+def check_and_set_color(banter):
+    match = re.search(r'#?[0-9a-fA-F]{6}', banter)
+    if match:
+        hex_color = match.group(0)
+        if not hex_color.startswith("#"):
+            hex_color = f"#{hex_color}"
+        root.configure(bg=hex_color)
+        text_widget.config(bg=hex_color)
+        update_text_color(hex_color)  # Update the text color based on the background color
+        print(f"Background color changed to {hex_color}")
+
+# Update text color based on background luminance
+def update_text_color(bg_color):
+    bg_color = bg_color.lstrip("#")
+    r, g, b = int(bg_color[:2], 16), int(bg_color[2:4], 16), int(bg_color[4:], 16)
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255  # Luminance calculation
+    if luminance > 0.5:
+        text_widget.config(fg="#809980")  # Light gray for bright backgrounds
+    else:
+        text_widget.config(fg="white")  # White for dark backgrounds
+
+# Banter generation loop
+def text_loop():
+    global static_entropy_values
+    if static_entropy_values is None:
+        static_entropy_values = corpus_entropy()
+        display_entropy(static_entropy_values, 0)
+
+    while True:
+        # Dynamically get the current bigram from the input box
+        starting_bi = input_text_var.get().strip()
+        starting_pair = tuple(starting_bi.split()) if len(starting_bi.split()) == 2 else None
+        new_banter = generate_banter(starting_pair, greedy=greedy_mode.get())
+        banter_queue.put(new_banter)
+        check_and_set_color(new_banter)
+        update_dynamic_entropy(new_banter)
+        time.sleep(3)  # Short interval for text generation
+
+# Audio generation loop
+def audio_loop():
+    while tts_enabled:
+        if not banter_queue.empty():
+            banter = banter_queue.get()
+            
+            # Create an event to track when audio generation finishes
+            audio_done = threading.Event()
+
+            # Wrap audio generation in a thread with a callback to set the event
+            def generate_audio_thread():
+                generate_and_save_audio(f"[Music]♪[{banter}]♪")
+                audio_done.set()  # Mark as done
+            
+            audio_thread = threading.Thread(target=generate_audio_thread, daemon=True)
+            audio_thread.start()
+
+            # Wait intelligently for the audio thread to finish
+            audio_done.wait()  # Block until the audio generation is done
+        else:
+            time.sleep(1)  # Polling interval if the queue is empty
+
+# Process banter queue
+def process_banter_queue():
+    if not banter_queue.empty():
+        text_widget.config(text="Banter: " + banter_queue.get())
+    root.after(100, process_banter_queue)
+
+# Toggle TTS
+def toggle_tts():
+    global tts_enabled
+    tts_enabled = not tts_enabled
+    tts_status.config(text=f"TTS: {'Enabled' if tts_enabled else 'Disabled'}")
+
+# Initialize Tkinter GUI
+root = tk.Tk()
+root.title("Banter Generator")
+root.configure(bg="black")
+# Add a progress bar to the GUI
+progress_var = tk.DoubleVar()
+progress_bar = ttk.Progressbar(root, variable=progress_var, maximum=100, length=300)
+progress_bar.pack()
+# Add a label to display progress percentage
+progress_label = tk.Label(root, text="Progress: 0%", font=("Arial", 14), fg="white", bg="black")
+progress_label.pack()
+
+text_widget = tk.Label(root, text="Banter: ", font=("Arial", 24), fg="white", bg="black", wraplength=root.winfo_screenwidth())
+text_widget.pack(expand=True)
+
+input_label = tk.Label(root, text="Input Starting Bigram: ", font=("Arial", 14), fg="white", bg="black")
+input_label.pack()
+
+input_text_var = tk.StringVar()
+input_text = tk.Entry(root, textvariable=input_text_var, font=("Arial", 14), fg="black")
+input_text.pack()
+
+tts_status = tk.Label(root, text="TTS: Enabled", font=("Arial", 14), fg="white", bg="black")
+tts_status.pack()
+
+toggle_button = tk.Button(root, text="Toggle TTS", font=("Arial", 14), command=toggle_tts, bg="gray", fg="black")
+toggle_button.pack()
+
+entropy_label = tk.Label(root, text="Entropy:", font=("Arial", 14), fg="white", bg="black", justify="left")
+entropy_label.pack()
+
+greedy_mode = tk.BooleanVar(value=False)
+greedy_checkbox = tk.Checkbutton(root, text="Greedy Mode", variable=greedy_mode, font=("Arial", 14), fg="white", bg="black", selectcolor="black")
+greedy_checkbox.pack()
+
+# Start loops in background threads
+threading.Thread(target=text_loop, daemon=True).start()
+threading.Thread(target=audio_loop, daemon=True).start()
+
+# Start processing queues
+process_banter_queue()
+
+# Run Tkinter event loop
+root.mainloop()
