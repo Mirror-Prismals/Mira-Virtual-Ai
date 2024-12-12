@@ -263,7 +263,7 @@ def update_text_color(bg_color):
         bg_color = bg_color.lstrip("#")
         r, g, b = int(bg_color[:2], 16), int(bg_color[2:4], 16), int(bg_color[4:], 16)
         luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-        text_color = "#809980" if luminance > 0.5 else "white"
+        text_color = "#FFFFFF" if luminance < 0.5 else "#000000"  # White text on dark bg, black text on light bg
         root.after(0, lambda: text_widget.config(fg=text_color))
     except Exception as e:
         print(f"Error updating text color: {e}")
@@ -429,11 +429,7 @@ def rebuild_corpus():
 def update_font():
     try:
         # Get current text content
-        text_widget.config(state='normal')
         current_text = text_widget.get(1.0, tk.END).strip()
-        text_widget.config(state='disabled')
-        
-        # Update the text with new font settings
         if current_text:
             update_text_display(current_text)
     except Exception as e:
@@ -526,7 +522,7 @@ input_label = tk.Label(root, text="Input Starting Bigram: ", font=("Arial", 14),
 input_label.pack()
 
 input_text_var = tk.StringVar()
-input_text = tk.Entry(root, textvariable=input_text_var, font=("Arial", 14), fg="black")
+input_text = tk.Entry(root, textvariable=input_text_var, font=("Arial", 14))
 input_text.pack()
 
 button_frame = tk.Frame(root, bg="black")
@@ -562,9 +558,18 @@ def update_sleep_label(event=None):
 
 sleep_scale.bind("<Motion>", update_sleep_label)
 
+# Create a style for the checkbutton
+style = ttk.Style()
+style.configure("Custom.TCheckbutton", 
+                background="black",
+                foreground="white")
+
 greedy_mode = tk.BooleanVar(value=False)
-greedy_checkbox = tk.Checkbutton(root, text="Greedy Mode", variable=greedy_mode, font=("Arial", 14), fg="white", bg="black", selectcolor="black")
-greedy_checkbox.pack()
+greedy_checkbox = ttk.Checkbutton(root, 
+                                 text="Greedy Mode", 
+                                 variable=greedy_mode,
+                                 style="Custom.TCheckbutton")
+greedy_checkbox.pack(pady=5)
 
 # Start loops in background threads
 threading.Thread(target=text_loop, daemon=True).start()
